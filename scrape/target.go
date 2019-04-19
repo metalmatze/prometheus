@@ -57,16 +57,18 @@ type Target struct {
 	lastError          error
 	lastScrape         time.Time
 	lastScrapeDuration time.Duration
+	scrapeInterval     time.Duration
 	health             TargetHealth
 	metadata           metricMetadataStore
 }
 
 // NewTarget creates a reasonably configured target for querying.
-func NewTarget(labels, discoveredLabels labels.Labels, params url.Values) *Target {
+func NewTarget(labels, discoveredLabels labels.Labels, params url.Values, interval model.Duration) *Target {
 	return &Target{
 		labels:           labels,
 		discoveredLabels: discoveredLabels,
 		params:           params,
+		scrapeInterval:   time.Duration(interval),
 		health:           HealthUnknown,
 	}
 }
@@ -227,6 +229,13 @@ func (t *Target) LastScrape() time.Time {
 	defer t.mtx.RUnlock()
 
 	return t.lastScrape
+}
+
+func (t *Target) ScrapeInterval() time.Duration {
+	t.mtx.RLock()
+	defer t.mtx.RUnlock()
+
+	return t.scrapeInterval
 }
 
 // LastScrapeDuration returns how long the last scrape of the target took.
@@ -427,7 +436,7 @@ func targetsFromGroup(tg *targetgroup.Group, cfg *config.ScrapeConfig) ([]*Targe
 			return nil, errors.Wrapf(err, "instance %d in group %s", i, tg)
 		}
 		if lbls != nil || origLabels != nil {
-			targets = append(targets, NewTarget(lbls, origLabels, cfg.Params))
+			targets = append(targets, NewTarget(lbls, origLabels, cfg.Params, cfg.ScrapeInterval))
 		}
 	}
 	return targets, nil
