@@ -17,6 +17,9 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -196,6 +199,67 @@ func TestRulesUnitTest(t *testing.T) {
 			t.Errorf("JUnit output had %d suites without test cases\n", total-cases)
 		}
 	})
+}
+
+func TestRulesUnitTestCLI(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		run        string
+		contents   string
+		errorText  string
+		failures   int
+		loadErrors int
+	}{
+		{name: "passing", run: "correct"},
+		{name: "failing", run: "wrong", failures: 1, errorText: `expr: "test"`},
+		{name: "unknown field", contents: "unknown_field: true", loadErrors: 1, errorText: "not found in type main.unitTestFile"},
+		{name: "invalid test groups", contents: "tests: not-a-list", loadErrors: 1, errorText: "into []main.testGroup"},
+		{name: "invalid test group", contents: "tests: [not-a-group]", loadErrors: 1, errorText: "into main.testGroup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			filename := filepath.Join(t.TempDir(), "junit.xml")
+			testFile := "testdata/rules_run.yml"
+			caseName := tc.run + " test"
+			if tc.contents != "" {
+				testFile = filepath.Join(t.TempDir(), "tests.yml")
+				require.NoError(t, os.WriteFile(testFile, []byte(tc.contents), 0o600))
+				caseName = "unknown"
+			}
+			cmd := exec.Command(promtoolPath, "-test.main", "test", "rules", "--run="+tc.run, "--junit="+filename, testFile)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			if tc.failures+tc.loadErrors == 0 {
+				require.NoError(t, err)
+				require.Equal(t, "Processing test file: "+testFile+"\n  SUCCESS\n\n", stdout.String())
+				require.Empty(t, stderr.String())
+			} else {
+				var exitErr *exec.ExitError
+				require.ErrorAs(t, err, &exitErr)
+				require.Equal(t, failureExitCode, exitErr.ExitCode())
+				require.Equal(t, "Processing test file: "+testFile+"\n\n\n", stdout.String())
+				require.Contains(t, stderr.String(), "  FAILED:\n")
+				require.Contains(t, stderr.String(), tc.errorText)
+			}
+			data, err := os.ReadFile(filename)
+			require.NoError(t, err)
+			var report junitxml.JUnitXML
+			require.NoError(t, xml.Unmarshal(data, &report))
+			require.Len(t, report.Suites, 1)
+			suite := report.Suites[0]
+			require.Equal(t, testFile, suite.Name)
+			require.Equal(t, 1, suite.TestCount)
+			require.Equal(t, tc.failures, suite.FailureCount)
+			require.Equal(t, tc.loadErrors, suite.ErrorCount)
+			require.Len(t, suite.Cases, 1)
+			require.Equal(t, caseName, suite.Cases[0].Name)
+			if tc.loadErrors > 0 {
+				require.Contains(t, suite.Cases[0].Error, tc.errorText)
+			}
+		})
+	}
 }
 
 func TestRulesUnitTestRun(t *testing.T) {
